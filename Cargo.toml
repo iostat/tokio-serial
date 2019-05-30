@@ -27,5 +27,9 @@ bytes = "0.4"
 mio = "0.6"
 mio-serial = { version = "=3.2", default-features = false }
 
+[patch.crates-io]
+mio-serial = { git = "https://github.com/benjumanji/mio-serial.git", revision = "46418529", default-features = false }
+serialport = { git = "https://gitlab.com/susurrus/serialport-rs.git", default-features = false, revision = "7994c0b" }
+
 [dev-dependencies]
 tokio = "0.1"
