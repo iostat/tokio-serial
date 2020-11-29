@@ -237,12 +237,17 @@ impl AsyncRead for Serial {
             }
             Poll::Pending  => return Poll::Pending
         };
-        Poll::Ready(guard.with_io(|| {
+        let res = guard.with_io(|| {
             let read_r = inner.read(buf.initialize_unfilled());
             println!("read: {:?}", read_r);
             let read = read_r?;
             Ok(buf.advance(read))
-        }))
+        });
+        match res {
+            Ok(x) => Poll::Ready(Ok(x)),
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => Poll::Pending,
+            Err(e) => Poll::Ready(Err(e))
+        }
     }
 }
 
@@ -256,11 +261,16 @@ impl AsyncWrite for Serial {
             Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
             Poll::Pending  => return Poll::Pending
         };
-        Poll::Ready(guard.with_io(|| {
+        let res = guard.with_io(|| {
             let write = inner.write(buf);
             println!("write: {:?}", write);
             write
-        }))
+        });
+        match res {
+            Ok(x) => Poll::Ready(Ok(x)),
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => Poll::Pending,
+            Err(e) => Poll::Ready(Err(e))
+        }
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context <'_>) -> Poll<io::Result<()>> {
