@@ -231,16 +231,11 @@ impl AsyncRead for Serial {
         let pinned = Pin::new(&mut this.io);
         let mut guard = match pinned.poll_read_ready(cx) {
             Poll::Ready(Ok(x)) => x,
-            Poll::Ready(Err(e)) => {
-                println!("failed to poll (read)");
-                return Poll::Ready(Err(e))
-            }
+            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
             Poll::Pending  => return Poll::Pending
         };
         let res = guard.with_io(|| {
-            let read_r = inner.read(buf.initialize_unfilled());
-            println!("read: {:?}", read_r);
-            let read = read_r?;
+            let read = inner.read(buf.initialize_unfilled())?;
             Ok(buf.advance(read))
         });
         match res {
@@ -261,12 +256,7 @@ impl AsyncWrite for Serial {
             Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
             Poll::Pending  => return Poll::Pending
         };
-        let res = guard.with_io(|| {
-            let write = inner.write(buf);
-            println!("write: {:?}", write);
-            write
-        });
-        match res {
+        match guard.with_io(|| inner.write(buf)) {
             Ok(x) => Poll::Ready(Ok(x)),
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => Poll::Pending,
             Err(e) => Poll::Ready(Err(e))
@@ -279,10 +269,7 @@ impl AsyncWrite for Serial {
         let pinned = Pin::new(&mut this.io);
         let mut guard = match pinned.poll_write_ready(cx) {
             Poll::Ready(Ok(x)) => x,
-            Poll::Ready(Err(e)) => {
-                println!("failed to poll (flush)");
-                return Poll::Ready(Err(e))
-            }
+            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
             Poll::Pending  => return Poll::Pending
         };
         let res = guard.with_io(|| inner.flush());
@@ -290,9 +277,6 @@ impl AsyncWrite for Serial {
             if e.kind() == io::ErrorKind::WouldBlock {
                 return Poll::Pending
             }
-        }
-        if res.is_err() {
-            println!("failed to flush")
         }
         Poll::Ready(res)
     }
