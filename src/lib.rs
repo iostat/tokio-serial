@@ -231,11 +231,15 @@ impl AsyncRead for Serial {
         let pinned = Pin::new(&mut this.io);
         let mut guard = match pinned.poll_read_ready(cx) {
             Poll::Ready(Ok(x)) => x,
-            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+            Poll::Ready(Err(e)) => {
+                println!("failed to poll (read)");
+                return Poll::Ready(Err(e))
+            }
             Poll::Pending  => return Poll::Pending
         };
         Poll::Ready(guard.with_io(|| {
             let read = inner.read(buf.initialize_unfilled())?;
+            println!("failed to read");
             Ok(buf.advance(read))
         }))
     }
@@ -248,9 +252,13 @@ impl AsyncWrite for Serial {
         let pinned = Pin::new(&mut this.io);
         let mut guard = match pinned.poll_write_ready(cx) {
             Poll::Ready(Ok(x)) => x,
-            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+            Poll::Ready(Err(e)) => {
+                println!("failed to poll (write)");
+                return Poll::Ready(Err(e))
+            }
             Poll::Pending  => return Poll::Pending
         };
+        println!("failed to write");
         Poll::Ready(guard.with_io(|| inner.write(buf)))
     }
 
@@ -260,7 +268,10 @@ impl AsyncWrite for Serial {
         let pinned = Pin::new(&mut this.io);
         let mut guard = match pinned.poll_write_ready(cx) {
             Poll::Ready(Ok(x)) => x,
-            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+            Poll::Ready(Err(e)) => {
+                println!("failed to poll (flush)");
+                return Poll::Ready(Err(e))
+            }
             Poll::Pending  => return Poll::Pending
         };
         let res = guard.with_io(|| inner.flush());
@@ -268,6 +279,9 @@ impl AsyncWrite for Serial {
             if e.kind() == io::ErrorKind::WouldBlock {
                 return Poll::Pending
             }
+        }
+        if res.is_err() {
+            println!("failed to flush")
         }
         Poll::Ready(res)
     }
