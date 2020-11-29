@@ -238,8 +238,9 @@ impl AsyncRead for Serial {
             Poll::Pending  => return Poll::Pending
         };
         Poll::Ready(guard.with_io(|| {
-            let read = inner.read(buf.initialize_unfilled())?;
-            println!("failed to read");
+            let read_r = inner.read(buf.initialize_unfilled());
+            println!("read: {:?}", read_r);
+            let read = read_r?;
             Ok(buf.advance(read))
         }))
     }
@@ -252,14 +253,14 @@ impl AsyncWrite for Serial {
         let pinned = Pin::new(&mut this.io);
         let mut guard = match pinned.poll_write_ready(cx) {
             Poll::Ready(Ok(x)) => x,
-            Poll::Ready(Err(e)) => {
-                println!("failed to poll (write)");
-                return Poll::Ready(Err(e))
-            }
+            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
             Poll::Pending  => return Poll::Pending
         };
-        println!("failed to write");
-        Poll::Ready(guard.with_io(|| inner.write(buf)))
+        Poll::Ready(guard.with_io(|| {
+            let write = inner.write(buf);
+            println!("write: {:?}", write);
+            write
+        }))
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context <'_>) -> Poll<io::Result<()>> {
