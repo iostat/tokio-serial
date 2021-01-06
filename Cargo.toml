@@ -22,10 +22,10 @@ libudev = ["mio-serial/libudev"]
 
 [dependencies]
 tokio = { version = "1.0.1", features = ["io-util", "net"], default-features = false }
-mio-serial = { version = "3.3.1", default-features = false }
+mio-serial = { git = "https://github.com/iostat/mio-serial", rev = "625077059f980b73e8526e78f8fb76cad51e00cc", default-features = false }
 
 [dev-dependencies]
 futures = "0.3.1"
-tokio = { version = "1.0.1", features = ["macros"], default-features = false }
+tokio = { version = "1.0.1", features = ["rt-multi-thread", "macros"], default-features = false }
 tokio-util = { version = "0.6.0", features = ["codec"], default-features = false }
 bytes = "1.0.0"
