@@ -8,6 +8,13 @@
 #![warn(rust_2018_idioms)]
 
 // Re-export serialport types and traits from mio_serial
+//
+// todo: now that `mio` is completely abstracted away as an implementation detail in tokio-1,
+// todo: we really don't need to depend on mio-serial... in fact, all have now is just two layers
+// todo: of SerialPort impls of tokio_serial::Serial -> mio_serial::Serial -> serialport::TTYPort
+// todo: while the only advantage we get from this is mio_serial::Serial's construct sets
+// todo: tcattr.control[VMIN] and the O_NONBLOCK fd flag, and we dont have to do two unsafe libc
+// todo: to read/write the fd...
 pub use mio_serial::{
     ClearBuffer, DataBits, Error, ErrorKind, FlowControl, Parity, SerialPort, SerialPortSettings,
     StopBits,
@@ -223,7 +230,7 @@ impl AsRawFd for Serial {
 impl AsyncRead for Serial {
     fn poll_read(
         self: Pin<&mut Self>,
-        cx: &mut Context <'_>,
+        cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         let this = self.get_mut();
@@ -232,28 +239,50 @@ impl AsyncRead for Serial {
         let mut guard = match pinned.poll_read_ready(cx) {
             Poll::Ready(Ok(x)) => x,
             Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-            Poll::Pending => return Poll::Pending
+            Poll::Pending => return Poll::Pending,
         };
+
+        // not entirely sure why I have to do this -- it seems like occasionally the
+        // ready flag gets cleared even though there's still data to be read?
+        // (i.e., AsyncFdReadyGuard::try_io ostensibly only clears the ready flag if
+        // it got an io::Err(EWOULDBLOCK), which shouldn't be possible if there's still data to
+        // be read. unless there's some really strange/erroneous semantics with read on USB serial
+        // devices :P)
+
+        // perhaps some funky race condition in tokio runtime introduced in 0.3/1.0??
         let res = guard.try_io(|_afd| {
             let read = inner.read(buf.initialize_unfilled())?;
-            Ok(buf.advance(read))
+            buf.advance(read);
+            let post_available = inner.bytes_to_read()?;
+            Ok(post_available)
         });
+
         match res {
-            Ok(x) => Poll::Ready(x),
+            Ok(Ok(bytes_still_available)) => {
+                if bytes_still_available > 0 {
+                    guard.retain_ready();
+                }
+                Poll::Ready(Ok(()))
+            }
+            Ok(Err(e)) => Poll::Ready(Err(e)),
             Err(TryIoError { .. }) => Poll::Pending,
         }
     }
 }
 
 impl AsyncWrite for Serial {
-    fn poll_write(self: Pin<&mut Self>, cx: &mut Context <'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
         let this = self.get_mut();
         let inner = &mut this.inner;
         let pinned = Pin::new(&mut this.io);
         let mut guard = match pinned.poll_write_ready(cx) {
             Poll::Ready(Ok(x)) => x,
             Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-            Poll::Pending  => return Poll::Pending
+            Poll::Pending => return Poll::Pending,
         };
         match guard.try_io(|_afd| inner.write(buf)) {
             Ok(x) => Poll::Ready(x),
@@ -261,23 +290,23 @@ impl AsyncWrite for Serial {
         }
     }
 
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context <'_>) -> Poll<io::Result<()>> {
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let this = self.get_mut();
         let inner = &mut this.inner;
         let pinned = Pin::new(&mut this.io);
         let mut guard = match pinned.poll_write_ready(cx) {
             Poll::Ready(Ok(x)) => x,
             Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-            Poll::Pending  => return Poll::Pending
+            Poll::Pending => return Poll::Pending,
         };
         let res = guard.try_io(|_afd| inner.flush());
         match res {
             Ok(x) => Poll::Ready(x),
-            Err(TryIoError { .. }) => Poll::Pending
+            Err(TryIoError { .. }) => Poll::Pending,
         }
     }
 
-    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context <'_>) -> Poll<io::Result<()>> {
+    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
         Poll::Ready(Ok(()))
     }
 }
