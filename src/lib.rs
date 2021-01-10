@@ -235,41 +235,59 @@ impl AsyncRead for Serial {
     ) -> Poll<io::Result<()>> {
         let this = self.get_mut();
         let inner = &mut this.inner;
-        let pinned = Pin::new(&mut this.io);
-        let mut guard = match pinned.poll_read_ready(cx) {
-            Poll::Ready(Ok(x)) => x,
-            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-            Poll::Pending => return Poll::Pending,
-        };
 
-        // not entirely sure why I have to do this -- it seems like occasionally the
-        // ready flag gets cleared even though there's still data to be read?
-        // (i.e., AsyncFdReadyGuard::try_io ostensibly only clears the ready flag if
-        // it got an io::Err(EWOULDBLOCK), which shouldn't be possible if there's still data to
-        // be read. unless there's some really strange/erroneous semantics with read on USB serial
-        // devices :P)
+        let io_pin = Pin::new(&mut this.io);
 
-        // perhaps some funky race condition in tokio runtime introduced in 0.3/1.0??
-        let res = guard.try_io(|_afd| {
-            let read = inner.read(buf.initialize_unfilled())?;
-            buf.advance(read);
-            let post_available = inner.bytes_to_read()?;
-            Ok(post_available)
-        });
-
-        match res {
-            Ok(Ok(bytes_still_available)) => {
-                if bytes_still_available > 0 {
-                    guard.retain_ready();
+        // because we're edge-triggered, but we do this funky thing with the AsyncFdReadyGuard
+        // there's a chance that we'll race the readiness guard and never get woken up again.
+        //
+        // particularly -- we'll get a readyguard because there's a readiness flag set (i.e., the OS has
+        // notified tokio that /something/ happened on the FD -- but that doesn't necessarily mean that there's
+        // any data to read. so we'll get our ReadyGuard because the read_readiness bit is set internally in tokio::io::driver,
+        // but if it was some weird control char and not actual readable data, then our read would return EAGAIN/EWOULDBLOCK,
+        // clearing the ready flag. Because we had the AsyndFdReadyGuard to begin with, it means our waker wasn't registered with
+        // mio or whatever is doing the i/o driving.
+        //
+        // in 99% of use cases, that design is completely sensible -- usually things don't say theyre ready to be read
+        // when they're not actually ready to be read. but serial ports are apparently weird because you could be read_ready without
+        // anything to read, it seems ¯\_(ツ)_/¯
+        //
+        // meanwhile, anything reading higher up (particualrly, FramedRead), will assume that there's
+        // nothing to do since there's nothing new in the buffer it's working against. and then just proceed to return None.
+        // anything consuming that stream will just just sit in Pending, none-the-wiser, assuming that FramedRead,
+        // registered the future to woken up. And FramedRead assumed that we as the underlying AsyncRead registered the supplied
+        // context for a wake.
+        //
+        // This only took a week to figure out :)
+        let mut total_read = 0usize;
+        loop {
+            let mut guard = match io_pin.poll_read_ready(cx) {
+                Poll::Ready(Ok(x)) => x,
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Pending => {
+                    if total_read == 0 {
+                        return Poll::Pending;
+                    } else {
+                        return Poll::Ready(Ok(()));
+                    }
                 }
-                Poll::Ready(Ok(()))
+            };
+            let res = guard.try_io(|_afd| {
+                let read = inner.read(buf.initialize_unfilled())?;
+                buf.advance(read);
+                total_read += read;
+                Ok(())
+            });
+
+            match res {
+                Ok(Err(err)) => return Poll::Ready(Err(err)),
+                _ => continue, // in all other cases, we need to keep looping to register the waker for more data...
             }
-            Ok(Err(e)) => Poll::Ready(Err(e)),
-            Err(TryIoError { .. }) => Poll::Pending,
         }
     }
 }
 
+// Thankfully, writes don't appear to suffer from the nonsense mentioned above...
 impl AsyncWrite for Serial {
     fn poll_write(
         self: Pin<&mut Self>,
@@ -278,8 +296,8 @@ impl AsyncWrite for Serial {
     ) -> Poll<io::Result<usize>> {
         let this = self.get_mut();
         let inner = &mut this.inner;
-        let pinned = Pin::new(&mut this.io);
-        let mut guard = match pinned.poll_write_ready(cx) {
+        let io_pin = Pin::new(&mut this.io);
+        let mut guard = match io_pin.poll_write_ready(cx) {
             Poll::Ready(Ok(x)) => x,
             Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
             Poll::Pending => return Poll::Pending,
@@ -293,8 +311,8 @@ impl AsyncWrite for Serial {
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let this = self.get_mut();
         let inner = &mut this.inner;
-        let pinned = Pin::new(&mut this.io);
-        let mut guard = match pinned.poll_write_ready(cx) {
+        let io_pin = Pin::new(&mut this.io);
+        let mut guard = match io_pin.poll_write_ready(cx) {
             Poll::Ready(Ok(x)) => x,
             Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
             Poll::Pending => return Poll::Pending,
